@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 
+import fetchWithTimeout from "../configs/fetch";
 import AlertModal from "../components/AlertModal";
 import UserAvatar from "../components/UserAvatar";
 import UsageStatus from "../components/UsageStatus";
 import UpgradeModal from "../components/UpgradeModal";
 import LoginModal from "../components/auth/LoginModal";
+import { AUTH_CONSTANTS } from "../constants/auth_constants";
 import AnimatedLoader from "../components/loaders/animated-loader/AnimatedLoader";
 
 const ATSMatcher = () => {
@@ -13,7 +15,7 @@ const ATSMatcher = () => {
   const pendingAnalysis = localStorage.getItem("pendingAnalysis");
   const [resumeFile, setResumeFile] = useState(null);
   const [jobDescription, setJobDescription] = useState(
-    pendingAnalysis ? JSON.parse(pendingAnalysis).jobDescription : ""
+    pendingAnalysis ? JSON.parse(pendingAnalysis).jobDescription : "",
   );
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -48,10 +50,20 @@ const ATSMatcher = () => {
   const [manualVerifyRef, setManualVerifyRef] = useState("");
   const [manualVerifyGateway, setManualVerifyGateway] = useState("paystack");
 
+  // Saved resumes state
+  const [savedResumes, setSavedResumes] = useState([]);
+  const [resumeSource, setResumeSource] = useState("upload"); // "upload" or "saved"
+  const [selectedSavedResume, setSelectedSavedResume] = useState(null);
+  const [loadingStates, setLoadingStates] = useState({
+    loadingSavingResume: false,
+  });
+
+  console.log({ savedResumes, resumeFile, resumeSource });
+
   // Check authentication on app load
   useEffect(() => {
     const checkAuth = async () => {
-      const token = localStorage.getItem("authToken");
+      const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
       if (token) {
         try {
           const response = await fetch(
@@ -61,7 +73,7 @@ const ATSMatcher = () => {
               headers: {
                 Authorization: `Bearer ${token}`,
               },
-            }
+            },
           );
 
           if (response.ok) {
@@ -77,13 +89,14 @@ const ATSMatcher = () => {
             setIsAuthenticated(true);
             // Fetch usage info after login
             fetchUsageInfo();
+            fetchSavedResumes();
 
             // Check if user just completed payment
             const paymentSuccess = localStorage.getItem("paymentSuccess");
             if (paymentSuccess === "true") {
               showAlert(
                 "Payment successful! Your usage limit has been updated. Please click 'Analyze Resume' to continue with your analysis.",
-                "success"
+                "success",
               );
               // Refresh usage info to reflect the payment
               fetchUsageInfo();
@@ -91,7 +104,7 @@ const ATSMatcher = () => {
               // localStorage.removeItem("paymentSuccess");
             }
           } else {
-            localStorage.removeItem("authToken");
+            localStorage.removeItem(AUTH_CONSTANTS.TOKEN_KEY);
           }
         } catch (error) {
           console.error("Auth verification error:", error);
@@ -113,26 +126,18 @@ const ATSMatcher = () => {
       const paystackReference = urlParams.get("trxref");
       const reference = urlParams.get("reference");
 
-      console.log("URL parameters detected:", {
-        paypalToken,
-        payerId,
-        paystackReference,
-        reference,
-      });
-      console.log("Current URL:", window.location.href);
-
       if ((paypalToken && payerId) || paystackReference || reference) {
         // Clean up the URL
         window.history.replaceState(
           {},
           document.title,
-          window.location.pathname
+          window.location.pathname,
         );
 
-        const token = localStorage.getItem("authToken");
+        const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
         if (!token) {
           console.log(
-            "No auth token found for payment verification - showing manual verify option"
+            "No auth token found for payment verification - showing manual verify option",
           );
           // Show manual verification option
           if (paypalToken && payerId) {
@@ -177,7 +182,7 @@ const ATSMatcher = () => {
 
   // Fetch usage information
   const fetchUsageInfo = async () => {
-    const token = localStorage.getItem("authToken");
+    const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
     if (!token) return;
 
     setLoadingUsage(true);
@@ -197,6 +202,60 @@ const ATSMatcher = () => {
       console.error("Usage fetch error:", error);
     } finally {
       setLoadingUsage(false);
+    }
+  };
+
+  // Fetch saved resumes
+  const fetchSavedResumes = async () => {
+    const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
+    if (!token) return;
+
+    try {
+      const response = await fetch("http://127.0.0.1:5000/api/resumes", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const existingResumes = data?.resumes || [];
+        setSavedResumes(existingResumes);
+      }
+    } catch (error) {
+      console.error("Saved resumes fetch error:", error);
+    }
+  };
+
+  // Save current resume
+  const saveResume = async () => {
+    if (!resumeFile) {
+      showAlert("No resume file to save.", "error");
+      return;
+    }
+    setLoadingStates((prev) => ({ ...prev, loadingSavingResume: true }));
+    const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
+    const formData = new FormData();
+    formData.append("resume", resumeFile);
+
+    try {
+      const response = await fetch("http://127.0.0.1:5000/api/resumes/save", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+        body: formData,
+      });
+
+      if (response.ok) {
+        showAlert("Resume saved successfully!", "success");
+        fetchSavedResumes();
+      } else {
+        const errorData = await response.json();
+        showAlert(errorData.error || "Failed to save resume.", "error");
+      }
+    } catch (error) {
+      showAlert("Network error. Please try again.", "error");
     }
   };
 
@@ -237,7 +296,7 @@ const ATSMatcher = () => {
 
   const handleLogout = async () => {
     try {
-      const token = localStorage.getItem("authToken");
+      const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
       if (token) {
         await fetch("http://127.0.0.1:5000/api/auth/logout", {
           method: "POST",
@@ -250,7 +309,7 @@ const ATSMatcher = () => {
       console.error("Logout error:", error);
     } finally {
       // Always clear local state and token
-      localStorage.removeItem("authToken");
+      localStorage.removeItem(AUTH_CONSTANTS.TOKEN_KEY);
       setUser(null);
       setIsAuthenticated(false);
       setResults(null);
@@ -288,8 +347,16 @@ const ATSMatcher = () => {
       }
     }
 
-    if (!resumeFile || !jobDescription.trim()) {
-      setError("Please upload a resume (PDF) and paste the job description.");
+    if (resumeSource === "upload" && !resumeFile) {
+      setError("Please upload a resume (PDF).");
+      return;
+    }
+    if (resumeSource === "saved" && !selectedSavedResume) {
+      setError("Please select a saved resume.");
+      return;
+    }
+    if (!jobDescription.trim()) {
+      setError("Please paste the job description.");
       return;
     }
 
@@ -299,18 +366,32 @@ const ATSMatcher = () => {
     setOriginalResumeText(""); // Clear previous text
 
     const formData = new FormData();
-    formData.append("resume", resumeFile);
+    if (resumeSource === "upload") {
+      formData.append("resume", resumeFile);
+    } else {
+      formData.append("resume_id", selectedSavedResume.id);
+    }
     formData.append("job_description", jobDescription);
 
     try {
-      const token = localStorage.getItem("authToken");
-      const response = await fetch("http://127.0.0.1:5000/api/match", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
+      // const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
+      // const response = await fetch("http://127.0.0.1:5000/api/match", {
+      //   method: "POST",
+      //   headers: {
+      //     Authorization: `Bearer ${token}`,
+      //   },
+      //   body: formData,
+      // });
+
+      const response = await fetchWithTimeout(
+        "http://127.0.0.1:5000/api/match",
+        {
+          method: "POST",
+
+          body: formData,
         },
-        body: formData,
-      });
+        100000,
+      );
 
       const data = await response.json();
 
@@ -334,12 +415,13 @@ const ATSMatcher = () => {
         window.scrollTo(0, document.documentElement.scrollHeight);
       });
       setResults(data);
-      setResumeFile(null);
+      // setResumeFile(null);
       setJobDescription("");
       setOriginalResumeText(data.original_resume_text || "");
 
       // Clear payment success flag after successful analysis
       localStorage.removeItem("paymentSuccess");
+      localStorage.removeItem("pendingAnalysis");
 
       // Refresh usage info after successful analysis
       fetchUsageInfo();
@@ -360,7 +442,7 @@ const ATSMatcher = () => {
 
     setDownloadingOptimized(true);
     try {
-      const token = localStorage.getItem("authToken");
+      const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
       const response = await fetch("http://127.0.0.1:5000/api/generate-cv", {
         method: "POST",
         headers: {
@@ -386,7 +468,7 @@ const ATSMatcher = () => {
         let filename = "optimized_cv";
         if (contentDisp) {
           const fileMatch = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(
-            contentDisp
+            contentDisp,
           );
           if (fileMatch && fileMatch[1]) {
             filename = decodeURIComponent(fileMatch[1]);
@@ -424,7 +506,7 @@ const ATSMatcher = () => {
 
     setDownloadingStandard(true);
     try {
-      const token = localStorage.getItem("authToken");
+      const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
       const response = await fetch(
         "http://127.0.0.1:5000/api/generate-standard-resume",
         {
@@ -436,7 +518,7 @@ const ATSMatcher = () => {
           body: JSON.stringify({
             resume_text: originalResumeText,
           }),
-        }
+        },
       );
 
       if (response.ok) {
@@ -468,11 +550,11 @@ const ATSMatcher = () => {
     showAlert("Initializing payment...", "info");
 
     try {
-      const token = localStorage.getItem("authToken");
+      const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
 
       // Step 1: Get Paystack public key
       const configResponse = await fetch(
-        "http://127.0.0.1:5000/api/payment/config"
+        "http://127.0.0.1:5000/api/payment/config",
       );
       if (!configResponse.ok) {
         showAlert("Failed to load payment configuration", "error");
@@ -494,7 +576,7 @@ const ATSMatcher = () => {
             amount: gateway === "paypal" ? 100 : 1000000, // $1.00 for PayPal, ₦1000 for Paystack
             gateway: gateway,
           }),
-        }
+        },
       );
 
       if (!initResponse.ok) {
@@ -524,7 +606,7 @@ const ATSMatcher = () => {
   // Handle premium upgrade
   const handleUpgradeToPremium = async (
     planType = "monthly",
-    gateway = "paystack"
+    gateway = "paystack",
   ) => {
     if (!user) return;
 
@@ -532,11 +614,11 @@ const ATSMatcher = () => {
     showAlert("Initializing premium upgrade...", "info");
 
     try {
-      const token = localStorage.getItem("authToken");
+      const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
 
       // Step 1: Get payment config
       const configResponse = await fetch(
-        "http://127.0.0.1:5000/api/payment/config"
+        "http://127.0.0.1:5000/api/payment/config",
       );
       if (!configResponse.ok) {
         showAlert("Failed to load payment configuration", "error");
@@ -556,7 +638,7 @@ const ATSMatcher = () => {
             plan_type: planType,
             gateway: gateway,
           }),
-        }
+        },
       );
 
       if (!upgradeResponse.ok) {
@@ -573,7 +655,7 @@ const ATSMatcher = () => {
       } else if (upgradeData?.data?.links) {
         // PayPal response
         const approvalLink = upgradeData.data.links.find(
-          (link) => link.rel === "approve"
+          (link) => link.rel === "approve",
         );
         if (approvalLink) {
           window.location.href = approvalLink.href;
@@ -601,7 +683,7 @@ const ATSMatcher = () => {
           headers: {
             Authorization: `Bearer ${token}`,
           },
-        }
+        },
       );
       console.log("PayPal verification response status:", response.status);
 
@@ -611,7 +693,7 @@ const ATSMatcher = () => {
         if (data.status && data.data && data.data.status === "success") {
           showAlert(
             "Payment successful! Your usage limit has been updated. Please click 'Analyze Resume' to continue with your analysis.",
-            "success"
+            "success",
           );
           localStorage.setItem("paymentSuccess", "true");
           // Refresh usage info to reflect the payment
@@ -625,7 +707,7 @@ const ATSMatcher = () => {
         console.error(
           "PayPal verification failed with status:",
           response.status,
-          errorText
+          errorText,
         );
         showAlert("PayPal payment verification failed", "error");
       }
@@ -637,7 +719,7 @@ const ATSMatcher = () => {
 
   // Manual payment verification
   const handleManualVerifyPayment = async (reference, gateway) => {
-    const token = localStorage.getItem("authToken");
+    const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
     if (!token) {
       showAlert("Authentication required for payment verification", "error");
       return;
@@ -654,7 +736,7 @@ const ATSMatcher = () => {
             Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({ gateway }),
-        }
+        },
       );
 
       if (response.ok) {
@@ -680,7 +762,7 @@ const ATSMatcher = () => {
 
   const handleVerifyPayment = async (reference) => {
     console.log("Starting Paystack verification for reference:", reference);
-    const token = localStorage.getItem("authToken");
+    const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
     if (!token) {
       console.error("No auth token for Paystack verification");
       showAlert("Authentication required for payment verification", "error");
@@ -697,12 +779,12 @@ const ATSMatcher = () => {
           headers: {
             Authorization: `Bearer ${token}`,
           },
-        }
+        },
       );
       console.log(
         "Paystack verification response status:",
         verifyResponse.status,
-        { verifyResponse }
+        { verifyResponse },
       );
 
       if (verifyResponse.ok) {
@@ -711,7 +793,7 @@ const ATSMatcher = () => {
         if (verifyData.status && verifyData.data.status === "success") {
           showAlert(
             "Payment successful! You can now run your analysis.",
-            "success"
+            "success",
           );
           localStorage.setItem("paymentSuccess", "true");
           // Refresh usage data
@@ -727,7 +809,7 @@ const ATSMatcher = () => {
         console.error(
           "Paystack verification failed with status:",
           verifyResponse.status,
-          errorText
+          errorText,
         );
         showAlert("Payment verification failed", "error");
       }
@@ -744,7 +826,7 @@ const ATSMatcher = () => {
   useEffect(() => {
     const verifyPayment = async () => {
       try {
-        const token = localStorage.getItem("authToken");
+        const token = localStorage.getItem(AUTH_CONSTANTS.TOKEN_KEY);
         if (!token) {
           console.error("No auth token found for payment verification");
           window.location.href = "/";
@@ -759,7 +841,7 @@ const ATSMatcher = () => {
               headers: {
                 Authorization: `Bearer ${token}`,
               },
-            }
+            },
           );
         } else {
           response = await fetch(
@@ -768,7 +850,7 @@ const ATSMatcher = () => {
               headers: {
                 Authorization: `Bearer ${token}`,
               },
-            }
+            },
           );
         }
         const data = await response.json();
@@ -798,8 +880,6 @@ const ATSMatcher = () => {
     }
   }, [reference, gateway]);
 
-  console.log({ reference });
-
   return (
     <div style={styles.container}>
       {/* Header with Avatar */}
@@ -810,9 +890,9 @@ const ATSMatcher = () => {
             Upload your CV and paste the job requirements below for an instant
             score and tailored recommendations.
           </p>
-          <Link to="/recruiters">
+          {/* <Link to="/recruiters">
             <button style={styles.recruiterButton}>Recruiters Tool</button>
-          </Link>
+          </Link> */}
         </div>
         {isAuthenticated && user && (
           <div style={styles.avatarContainer}>
@@ -884,7 +964,7 @@ const ATSMatcher = () => {
               onClick={async () => {
                 await handleManualVerifyPayment(
                   manualVerifyRef,
-                  manualVerifyGateway
+                  manualVerifyGateway,
                 );
                 setShowManualVerify(false);
               }}
@@ -920,18 +1000,99 @@ const ATSMatcher = () => {
       <form onSubmit={handleSubmission} style={styles.inputSection}>
         {/* Resume Uploader */}
         <div style={styles.inputGroup}>
-          <h3>1. Upload Resume (PDF)</h3>
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={(e) => {
-              setResumeFile(e.target.files[0]);
-              setError(null); // Clear error on new input
-            }}
-            style={styles.fileInput}
-            required
-          />
-          {resumeFile && <p>File Selected: {resumeFile.name}</p>}
+          <h3>1. Select Resume Source</h3>
+          <div style={{ display: "flex", gap: "20px", marginBottom: "20px" }}>
+            <div
+              style={{
+                ...styles.sourceCard,
+                ...(resumeSource === "upload" ? styles.sourceCardSelected : {}),
+              }}
+              onClick={() => {
+                setResumeSource("upload");
+                setSelectedSavedResume(null);
+                setError(null);
+              }}
+            >
+              <div style={styles.cardIcon}>📤</div>
+              <h4 style={styles.cardTitle}>Upload New Resume</h4>
+              <p style={styles.cardDescription}>
+                Select a PDF file from your device
+              </p>
+            </div>
+            <div
+              style={{
+                ...styles.sourceCard,
+                ...(resumeSource === "saved" ? styles.sourceCardSelected : {}),
+              }}
+              onClick={() => {
+                setResumeSource("saved");
+                setResumeFile(null);
+                setError(null);
+              }}
+            >
+              <div style={styles.cardIcon}>💾</div>
+              <h4 style={styles.cardTitle}>Use Saved Resume</h4>
+              <p style={styles.cardDescription}>
+                Choose from your saved resumes
+              </p>
+            </div>
+          </div>
+          {resumeSource === "upload" ? (
+            <>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(e) => {
+                  setResumeFile(e.target.files[0]);
+                  setError(null); // Clear error on new input
+                }}
+                style={styles.fileInput}
+                required
+              />
+              {resumeFile && <p>File Selected: {resumeFile.name}</p>}
+            </>
+          ) : (
+            <div style={styles.savedResumesContainer}>
+              {savedResumes?.length < 1 ? (
+                <p
+                  style={{
+                    textAlign: "center",
+                    color: "#666",
+                    padding: "20px",
+                  }}
+                >
+                  No saved resumes yet. Upload and save a resume first.
+                </p>
+              ) : (
+                <div style={styles.resumesGrid}>
+                  {savedResumes?.map((resume) => (
+                    <div
+                      key={resume.id}
+                      style={{
+                        ...styles.resumeCard,
+                        ...(selectedSavedResume?.id === resume.id
+                          ? styles.resumeCardSelected
+                          : {}),
+                      }}
+                      onClick={() => setSelectedSavedResume(resume)}
+                    >
+                      <div style={styles.resumeIcon}>📄</div>
+                      <div style={styles.resumeInfo}>
+                        <h5 style={styles.resumeFilename}>{resume.filename}</h5>
+                        <p style={styles.resumeDate}>
+                          Saved on{" "}
+                          {new Date(resume.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                      {selectedSavedResume?.id === resume.id && (
+                        <div style={styles.selectedIndicator}>✓</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Job Description Input */}
@@ -955,7 +1116,12 @@ const ATSMatcher = () => {
         ) : (
           <button
             type="submit"
-            disabled={loading || !resumeFile || !jobDescription.trim()}
+            disabled={
+              loading ||
+              (resumeSource === "upload" && !resumeFile) ||
+              (resumeSource === "saved" && !selectedSavedResume) ||
+              !jobDescription.trim()
+            }
             style={styles.submitButton}
           >
             Get Match Score & Recommendations
@@ -1084,7 +1250,7 @@ const ATSMatcher = () => {
                               → Add to: <em>{section}</em>
                             </p>
                           </div>
-                        )
+                        ),
                       )}
                     </div>
                   </div>
@@ -1140,7 +1306,7 @@ const ATSMatcher = () => {
                           <li key={index} style={styles.suggestionItem}>
                             {suggestion}
                           </li>
-                        )
+                        ),
                       )}
                     </ul>
                   </div>
@@ -1209,6 +1375,28 @@ const ATSMatcher = () => {
           >
             📊 See All Analysis
           </button>
+
+          {/* Save Resume Button - only for uploaded resumes */}
+          {resumeSource === "upload" && resumeFile && (
+            <button
+              onClick={saveResume}
+              style={{
+                ...styles.submitButton,
+                backgroundColor: "#ff9800",
+                marginTop: "15px",
+              }}
+            >
+              {loadingStates.loadingSavingResume && (
+                <div
+                  className="spinner"
+                  style={{ width: "16px", height: "16px" }}
+                />
+              )}
+              {loadingStates.loadingSavingResume
+                ? "Saving..."
+                : "💾 Save Resume for Later"}
+            </button>
+          )}
         </div>
       )}
 
@@ -1334,7 +1522,7 @@ const ATSMatcher = () => {
                               → Add to: <em>{section}</em>
                             </p>
                           </div>
-                        )
+                        ),
                       )}
                     </div>
                   </section>
@@ -1396,7 +1584,7 @@ const ATSMatcher = () => {
                           <li key={index} style={styles.suggestionItem}>
                             {suggestion}
                           </li>
-                        )
+                        ),
                       )}
                     </ul>
                   </section>
@@ -1495,6 +1683,8 @@ const styles = {
   container: {
     width: "100%",
     maxWidth: "1000px",
+    height: "89vh",
+    overflowY: "auto",
     margin: "0 auto",
     padding: "30px",
     fontFamily: "Arial, sans-serif",
@@ -1546,6 +1736,7 @@ const styles = {
   inputGroup: {
     marginBottom: "20px",
     width: "100%",
+    color: "#202124",
   },
   fileInput: {
     padding: "20px",
@@ -1564,6 +1755,8 @@ const styles = {
     borderRadius: "4px",
     resize: "vertical",
     fontSize: "1em",
+    backgroundColor: "#f9f9f9",
+    color: "#202124",
   },
   submitButton: {
     width: "100%",
@@ -1810,5 +2003,100 @@ const styles = {
     justifyContent: "flex-end",
     gap: "10px",
     backgroundColor: "#f9f9f9",
+  },
+  sourceCard: {
+    flex: 1,
+    padding: "20px",
+    border: "2px solid #e0e0e0",
+    borderRadius: "12px",
+    cursor: "pointer",
+    textAlign: "center",
+    transition: "all 0.3s ease",
+    backgroundColor: "#fff",
+    minHeight: "120px",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    alignItems: "center",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+  },
+  sourceCardSelected: {
+    borderColor: "#1a73e8",
+    backgroundColor: "#e3f2fd",
+    boxShadow: "0 4px 16px rgba(26, 115, 232, 0.2)",
+  },
+  cardIcon: {
+    fontSize: "2em",
+    marginBottom: "10px",
+  },
+  cardTitle: {
+    fontSize: "1.1em",
+    fontWeight: "600",
+    color: "#333",
+    margin: "0 0 5px 0",
+  },
+  cardDescription: {
+    fontSize: "0.9em",
+    color: "#666",
+    margin: 0,
+  },
+  savedResumesContainer: {
+    width: "100%",
+  },
+  resumesGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+    gap: "15px",
+  },
+  resumeCard: {
+    padding: "15px",
+    border: "2px solid #e0e0e0",
+    borderRadius: "8px",
+    cursor: "pointer",
+    transition: "all 0.3s ease",
+    backgroundColor: "#fff",
+    display: "flex",
+    alignItems: "center",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+    position: "relative",
+  },
+  resumeCardSelected: {
+    borderColor: "#1a73e8",
+    backgroundColor: "#e3f2fd",
+    boxShadow: "0 4px 16px rgba(26, 115, 232, 0.2)",
+  },
+  resumeIcon: {
+    fontSize: "1.5em",
+    marginRight: "15px",
+    color: "#666",
+  },
+  resumeInfo: {
+    flex: 1,
+  },
+  resumeFilename: {
+    fontSize: "1em",
+    fontWeight: "600",
+    color: "#333",
+    margin: "0 0 5px 0",
+  },
+  resumeDate: {
+    fontSize: "0.8em",
+    color: "#666",
+    margin: 0,
+  },
+  selectedIndicator: {
+    position: "absolute",
+    top: "10px",
+    right: "10px",
+    backgroundColor: "#1a73e8",
+    color: "white",
+    borderRadius: "50%",
+    width: "24px",
+    height: "24px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: "0.8em",
+    fontWeight: "bold",
   },
 };
